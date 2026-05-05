@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-df = pd.read_csv('processed_energy_data.csv', index_col=0, parse_dates=True)
+df = pd.read_csv('data/processed_energy_data.csv', index_col=0, parse_dates=True)
 
 print("=" * 80)
 print("THÔNG TIN CƠ BẢN VỀ TẬP DỮ LIỆU ĐÃ TIỀN XỬ LÝ")
