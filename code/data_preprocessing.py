@@ -1,132 +1,277 @@
+import matplotlib
+matplotlib.use('Agg')  # Không hiển thị cửa sổ, chỉ lưu file
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+import seaborn as sns
 import pandas as pd
 import numpy as np
 import os
-from datetime import datetime
-import holidays
-from sklearn.impute import KNNImputer
 
-# ====================== 1. ĐỌC DỮ LIỆU ======================
-df = pd.read_csv('data/pjm_hourly_est.csv')
-    
-# Chuyển Datetime thành index
-df['Datetime'] = pd.to_datetime(df['Datetime'])
-df = df.set_index('Datetime')
-df = df.sort_index()
+# ====================== CẤU HÌNH ======================
+OUTPUT_DIR = 'output/charts'
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Loại bỏ các thời điểm bị trùng lặp (nếu có, do chuyển đổi giờ mùa hè/mùa đông hoặc lỗi ghi nhận)
-df = df[~df.index.duplicated(keep='first')]
+# Style chung
+sns.set_theme(style='whitegrid', palette='tab10')
+plt.rcParams.update({
+    'figure.dpi': 150,
+    'savefig.bbox': 'tight',
+    'savefig.facecolor': 'white',
+    'font.size': 11,
+})
 
-print("Kích thước dataframe:", df.shape)
-print("\nSố lượng giá trị thiếu mỗi khu vực:\n", df.isnull().sum())
-print("\nTỉ lệ % thiếu mỗi khu vực:\n", (df.isnull().sum() / len(df) * 100).round(2))
+REGION_COLS = ['AEP', 'COMED', 'DAYTON', 'DEOK', 'DOM', 'DUQ', 'EKPC', 'FE', 'NI', 'PJME', 'PJMW']
 
-# ====================== 2. XỬ LÝ MISSING VALUES ======================
-df_processed = df.copy()
+# ====================== ĐỌC DỮ LIỆU ======================
+print("Đang đọc dữ liệu...")
+df = pd.read_csv('processed_energy_feature_data.csv', index_col=0, parse_dates=True)
 
-# Phương pháp 1: # Điền giá trị NaN bằng Trung bình có trọng số (dựa vào tương quan của 5 vùng cao nhất)
-correlation_matrix = df.corr()
-print("\n=== MA TRẬN TƯƠNG QUAN GIỮA CÁC VÙNG ===")
-print(correlation_matrix.round(2))
+# Chỉ lấy cột vùng thực có trong data
+region_cols = [c for c in REGION_COLS if c in df.columns]
 
-for target_region in df_processed.columns:
-    if target_region not in correlation_matrix.columns or df_processed[target_region].isnull().sum() == 0:
-        continue
-        
-    # Lấy 5 vùng có độ tương quan dương cao nhất (bỏ qua chính nó)
-    top_5_corr = correlation_matrix[target_region].nlargest(6)[1:]
-    top_5_regions = top_5_corr.index.tolist()
-    weights = top_5_corr.values
-    
-    # Tìm index các vị trí đang bị thiếu dữ liệu ở vùng hiện tại
-    nan_mask = df_processed[target_region].isnull()
-    
-    if nan_mask.any():
-        # Trích xuất dữ liệu của 5 vùng tương quan tại đúng các thời điểm bị missing
-        support_data = df_processed.loc[nan_mask, top_5_regions].values
-        
-        # Bản đồ đánh dấu (mask) những giá trị hợp lệ, không bị NaN của các vùng lân cận
-        valid_mask = ~np.isnan(support_data)
-        
-        # Tử số: Tổng của (Giá trị vùng lân cận * Độ tương quan)
-        # dùng np.nansum để tự động bỏ qua các ô có giá trị NaN
-        sum_weighted_values = np.nansum(support_data * weights, axis=1)
-        
-        # Mẫu số: Chỉ tính tổng trọng số của những vùng có dữ liệu thật sự
-        sum_weights = np.sum(weights * valid_mask, axis=1)
-        
-        # Nội suy: Tử số / Mẫu số. 
-        # Nếu mẫu số = 0 (tức là cả 5 vùng đều bị NaN vào giờ đó), thì giữ nguyên là NaN
-        imputed_values = np.divide(sum_weighted_values, sum_weights, 
-                                   out=np.full_like(sum_weighted_values, np.nan), 
-                                   where=sum_weights!=0)
-        
-        # Gán lại giá trị đã nội suy
-        df_processed.loc[nan_mask, target_region] = imputed_values.round(1)
+print(f"Dữ liệu: {df.shape[0]:,} hàng x {df.shape[1]} cột")
+print(f"Thời gian: {df.index.min()} → {df.index.max()}")
+print(f"Vùng: {region_cols}")
+print()
 
-# Phương pháp 2: Đánh dấu những dòng mà dữ liệu bị suy giảm (thêm feature cảnh báo)
-# Điều này giúp mô hình biết phân biệt dữ liệu thật vs dữ liệu được điền
-missing_rate = df.isnull().sum(axis=1) / df.shape[1]
-df_processed['data_quality'] = (1 - missing_rate).values.round(1)
+# ====================== BIỂU ĐỒ 1: PHÂN PHỐI TẢI ĐIỆN THEO VÙNG (Boxplot) ======================
+print("Vẽ biểu đồ 1: Boxplot phân phối theo vùng...")
+fig, ax = plt.subplots(figsize=(14, 7))
 
-# Phương pháp 3: Chỉ giữ lại những dòng mà có ít nhất 50% dữ liệu thật
-df_processed = df_processed[df.isnull().sum(axis=1) / df.shape[1] <= 0.5]
+data_box = [df[c].dropna().values for c in region_cols]
+bp = ax.boxplot(data_box, labels=region_cols, patch_artist=True, notch=False,
+                medianprops=dict(color='black', linewidth=2))
 
-print(f"\nSau xử lý - Kích thước dataframe: {df_processed.shape}")
-print(f"Giá trị NaN còn lại: {df_processed.isnull().sum().sum()}")
+colors = sns.color_palette('tab10', len(region_cols))
+for patch, color in zip(bp['boxes'], colors):
+    patch.set_facecolor(color)
+    patch.set_alpha(0.7)
 
-# Xóa cột NaN nếu có
-df_processed = df_processed.dropna(axis=1, how='all')
-df_processed.to_csv('processed_data.csv')
+ax.set_title('Phân Phối Tải Điện Theo Vùng (MW)', fontsize=15, fontweight='bold', pad=15)
+ax.set_xlabel('Vùng', fontsize=12)
+ax.set_ylabel('Tải điện (MW)', fontsize=12)
+ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{x:,.0f}'))
+plt.tight_layout()
+plt.savefig(f'{OUTPUT_DIR}/01_boxplot_phan_phoi_theo_vung.png')
+plt.close()
+print(f"  → Đã lưu: {OUTPUT_DIR}/01_boxplot_phan_phoi_theo_vung.png")
 
-describe = df_processed.describe().round(2)
-describe.to_csv('data_description.csv')
+# ====================== BIỂU ĐỒ 2: XU HƯỚNG TỔNG TẢI ĐIỆN THEO NĂM ======================
+print("Vẽ biểu đồ 2: Xu hướng tổng tải điện theo năm...")
+fig, ax = plt.subplots(figsize=(14, 5))
 
-# Khởi tạo dict để chứa tất cả features
-features_dict = {}
+df_yearly = df['total_MW'].resample('ME').mean()
+ax.plot(df_yearly.index, df_yearly.values, color='steelblue', linewidth=1.2, alpha=0.6, label='Trung bình tháng')
 
-# Time features
-features_dict['hour'] = df_processed.index.hour
-features_dict['dayofweek'] = df_processed.index.dayofweek
-features_dict['quarter'] = df_processed.index.quarter
-features_dict['month'] = df_processed.index.month
-features_dict['year'] = df_processed.index.year
-features_dict['dayofyear'] = df_processed.index.dayofyear
-features_dict['weekofyear'] = df_processed.index.isocalendar().week
-features_dict['is_weekend'] = df_processed.index.dayofweek.isin([5,6]).astype(int)
+# Đường xu hướng năm
+df_annual = df['total_MW'].resample('YE').mean()
+ax.plot(df_annual.index, df_annual.values, color='crimson', linewidth=2.5,
+        marker='o', markersize=6, label='Trung bình năm')
 
-# Holiday (US) - explicit cast để tránh FutureWarning
-us_holidays = holidays.US(years=range(2002, 2019))
-holiday_dates = pd.to_datetime(list(us_holidays.keys()))
-features_dict['is_holiday'] = pd.to_datetime(df_processed.index.date).isin(holiday_dates).astype(int)
+ax.set_title('Xu Hướng Tổng Tải Điện PJM Theo Thời Gian', fontsize=15, fontweight='bold', pad=15)
+ax.set_xlabel('Năm', fontsize=12)
+ax.set_ylabel('Tải điện (MW)', fontsize=12)
+ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{x:,.0f}'))
+ax.legend(fontsize=11)
+plt.tight_layout()
+plt.savefig(f'{OUTPUT_DIR}/02_xu_huong_theo_nam.png')
+plt.close()
+print(f"  → Đã lưu: {OUTPUT_DIR}/02_xu_huong_theo_nam.png")
 
-# Lag features
-for lag in [1, 24, 168]:  # 1h trước, 1 ngày trước, 1 tuần trước
-    for region in df_processed.columns:
-        if region != 'data_quality':  # Bỏ qua feature data_quality
-            features_dict[f'{region}_lag_{lag}'] = df_processed[region].shift(lag)
+# ====================== BIỂU ĐỒ 3: MẪU TIÊU THỤ THEO GIỜ TRONG NGÀY ======================
+print("Vẽ biểu đồ 3: Mẫu tiêu thụ theo giờ...")
+fig, axes = plt.subplots(3, 4, figsize=(18, 12), sharey=False)
+axes = axes.flatten()
 
-# Rolling statistics
-for window in [24, 168]:  # 24h và 7 ngày
-    for region in df_processed.columns:
-        if region != 'data_quality':
-            features_dict[f'{region}_roll_mean_{window}'] = df_processed[region].rolling(window).mean()
-            features_dict[f'{region}_roll_std_{window}'] = df_processed[region].rolling(window).std()
+for i, col in enumerate(region_cols):
+    ax = axes[i]
+    hourly = df.groupby('hour')[col].mean()
+    ax.plot(hourly.index, hourly.values, color=colors[i], linewidth=2.5, marker='o', markersize=4)
+    ax.fill_between(hourly.index, hourly.values, alpha=0.15, color=colors[i])
+    ax.set_title(col, fontsize=12, fontweight='bold')
+    ax.set_xlabel('Giờ', fontsize=10)
+    ax.set_ylabel('MW trung bình', fontsize=10)
+    ax.set_xticks(range(0, 24, 4))
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{x:,.0f}'))
 
-# Aggregated features (tổng PJM)
-energy_cols = [col for col in df_processed.columns if col != 'data_quality']
-features_dict['total_MW'] = df_processed[energy_cols].sum(axis=1)
+# Tắt ô thừa
+for j in range(len(region_cols), len(axes)):
+    axes[j].set_visible(False)
 
-# Concat tất cả features một lần (tránh DataFrame fragmentation)
-features_df = pd.DataFrame(features_dict, index=df_processed.index)
-df_final = pd.concat([df_processed, features_df], axis=1)
+fig.suptitle('Mẫu Tiêu Thụ Điện Trung Bình Theo Giờ - Từng Vùng', fontsize=16, fontweight='bold', y=1.01)
+plt.tight_layout()
+plt.savefig(f'{OUTPUT_DIR}/03_mau_theo_gio.png')
+plt.close()
+print(f"  → Đã lưu: {OUTPUT_DIR}/03_mau_theo_gio.png")
 
-print("Final shape with features:", df_final.shape)
+# ====================== BIỂU ĐỒ 4: MẪU TIÊU THỤ THEO THÁNG ======================
+print("Vẽ biểu đồ 4: Mẫu tiêu thụ theo tháng...")
+fig, ax = plt.subplots(figsize=(14, 6))
 
-# Xóa các cột NaN do lag và rolling
-df_final = df_final.dropna(axis=1, how='all')
-print(df_final.head())
+month_labels = ['T1','T2','T3','T4','T5','T6','T7','T8','T9','T10','T11','T12']
+for i, col in enumerate(region_cols):
+    monthly = df.groupby('month')[col].mean()
+    ax.plot(monthly.index, monthly.values, color=colors[i], linewidth=2,
+            marker='o', markersize=5, label=col)
 
-# ====================== 4. LƯU FILE ======================
-df_final.to_csv('processed_energy_feature_data.csv')
+ax.set_xticks(range(1, 13))
+ax.set_xticklabels(month_labels)
+ax.set_title('Mẫu Tiêu Thụ Điện Trung Bình Theo Tháng', fontsize=15, fontweight='bold', pad=15)
+ax.set_xlabel('Tháng', fontsize=12)
+ax.set_ylabel('MW trung bình', fontsize=12)
+ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{x:,.0f}'))
+ax.legend(loc='upper right', fontsize=9, ncol=2)
+plt.tight_layout()
+plt.savefig(f'{OUTPUT_DIR}/04_mau_theo_thang.png')
+plt.close()
+print(f"  → Đã lưu: {OUTPUT_DIR}/04_mau_theo_thang.png")
 
-print("Hoàn thành tiền xử lý!")
+# ====================== BIỂU ĐỒ 5: MẪU TIÊU THỤ THEO NGÀY TRONG TUẦN ======================
+print("Vẽ biểu đồ 5: Mẫu tiêu thụ theo ngày trong tuần...")
+fig, ax = plt.subplots(figsize=(12, 6))
+
+day_labels = ['Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7', 'Chủ nhật']
+for i, col in enumerate(region_cols):
+    daily = df.groupby('dayofweek')[col].mean()
+    ax.plot(daily.index, daily.values, color=colors[i], linewidth=2,
+            marker='s', markersize=6, label=col)
+
+ax.axvspan(4.5, 6.5, alpha=0.08, color='gray', label='Cuối tuần')
+ax.set_xticks(range(7))
+ax.set_xticklabels(day_labels)
+ax.set_title('Mẫu Tiêu Thụ Điện Trung Bình Theo Ngày Trong Tuần', fontsize=15, fontweight='bold', pad=15)
+ax.set_xlabel('Ngày', fontsize=12)
+ax.set_ylabel('MW trung bình', fontsize=12)
+ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{x:,.0f}'))
+ax.legend(loc='upper right', fontsize=9, ncol=2)
+plt.tight_layout()
+plt.savefig(f'{OUTPUT_DIR}/05_mau_theo_ngay_tuan.png')
+plt.close()
+print(f"  → Đã lưu: {OUTPUT_DIR}/05_mau_theo_ngay_tuan.png")
+
+# ====================== BIỂU ĐỒ 6: SO SÁNH NGÀY THƯỜNG vs CUỐI TUẦN vs NGÀY LỄ ======================
+print("Vẽ biểu đồ 6: So sánh ngày thường / cuối tuần / ngày lễ...")
+fig, axes = plt.subplots(1, 3, figsize=(18, 6), sharey=True)
+
+labels = ['Ngày thường\n(is_weekend=0, is_holiday=0)',
+          'Cuối tuần\n(is_weekend=1)',
+          'Ngày lễ\n(is_holiday=1)']
+masks = [
+    (df['is_weekend'] == 0) & (df['is_holiday'] == 0),
+    df['is_weekend'] == 1,
+    df['is_holiday'] == 1,
+]
+palette = ['steelblue', 'coral', 'mediumseagreen']
+
+# Dùng AEP làm đại diện, vẽ theo giờ
+for ax, mask, label, color in zip(axes, masks, labels, palette):
+    subset = df[mask]
+    hourly = subset.groupby('hour')['AEP'].mean()
+    hourly_std = subset.groupby('hour')['AEP'].std()
+    ax.plot(hourly.index, hourly.values, color=color, linewidth=2.5, marker='o', markersize=4)
+    ax.fill_between(hourly.index,
+                    hourly.values - hourly_std.values,
+                    hourly.values + hourly_std.values,
+                    alpha=0.2, color=color)
+    ax.set_title(label, fontsize=11, fontweight='bold')
+    ax.set_xlabel('Giờ', fontsize=10)
+    ax.set_ylabel('AEP (MW)', fontsize=10)
+    ax.set_xticks(range(0, 24, 4))
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{x:,.0f}'))
+
+fig.suptitle('So Sánh Mẫu Tiêu Thụ: Ngày Thường / Cuối Tuần / Ngày Lễ (Vùng AEP)',
+             fontsize=14, fontweight='bold', y=1.02)
+plt.tight_layout()
+plt.savefig(f'{OUTPUT_DIR}/06_so_sanh_ngay_thuong_cuoi_tuan_le.png')
+plt.close()
+print(f"  → Đã lưu: {OUTPUT_DIR}/06_so_sanh_ngay_thuong_cuoi_tuan_le.png")
+
+# ====================== BIỂU ĐỒ 7: HEATMAP TƯƠNG QUAN GIỮA CÁC VÙNG ======================
+print("Vẽ biểu đồ 7: Heatmap tương quan...")
+fig, ax = plt.subplots(figsize=(11, 9))
+
+corr_matrix = df[region_cols].corr().round(2)
+mask = np.triu(np.ones_like(corr_matrix, dtype=bool), k=1)  # Hiện cả ma trận
+sns.heatmap(corr_matrix, annot=True, fmt='.2f', cmap='RdYlGn',
+            vmin=0.6, vmax=1.0, ax=ax,
+            linewidths=0.5, linecolor='white',
+            cbar_kws={'label': 'Hệ số tương quan'})
+
+ax.set_title('Ma Trận Tương Quan Giữa Các Vùng Điện', fontsize=15, fontweight='bold', pad=15)
+plt.tight_layout()
+plt.savefig(f'{OUTPUT_DIR}/07_heatmap_tuong_quan.png')
+plt.close()
+print(f"  → Đã lưu: {OUTPUT_DIR}/07_heatmap_tuong_quan.png")
+
+# ====================== BIỂU ĐỒ 8: HEATMAP GIỜ x THÁNG (tải điện trung bình AEP) ======================
+print("Vẽ biểu đồ 8: Heatmap giờ x tháng...")
+fig, ax = plt.subplots(figsize=(14, 7))
+
+pivot = df.pivot_table(values='AEP', index='hour', columns='month', aggfunc='mean')
+pivot.columns = ['T1','T2','T3','T4','T5','T6','T7','T8','T9','T10','T11','T12']
+
+sns.heatmap(pivot, cmap='YlOrRd', annot=False, fmt='.0f', ax=ax,
+            cbar_kws={'label': 'MW trung bình'},
+            linewidths=0.3)
+
+ax.set_title('Tải Điện Trung Bình AEP: Giờ × Tháng (MW)', fontsize=15, fontweight='bold', pad=15)
+ax.set_xlabel('Tháng', fontsize=12)
+ax.set_ylabel('Giờ trong ngày', fontsize=12)
+plt.tight_layout()
+plt.savefig(f'{OUTPUT_DIR}/08_heatmap_gio_x_thang.png')
+plt.close()
+print(f"  → Đã lưu: {OUTPUT_DIR}/08_heatmap_gio_x_thang.png")
+
+# ====================== BIỂU ĐỒ 9: HISTOGRAM PHÂN PHỐI TẢI ĐIỆN ======================
+print("Vẽ biểu đồ 9: Histogram phân phối...")
+fig, axes = plt.subplots(3, 4, figsize=(18, 12))
+axes = axes.flatten()
+
+for i, col in enumerate(region_cols):
+    ax = axes[i]
+    data = df[col].dropna()
+    ax.hist(data, bins=60, color=colors[i], alpha=0.7, edgecolor='white', linewidth=0.3)
+    ax.axvline(data.mean(), color='black', linewidth=1.8, linestyle='--', label=f'Mean: {data.mean():,.0f}')
+    ax.axvline(data.median(), color='red', linewidth=1.8, linestyle=':', label=f'Median: {data.median():,.0f}')
+    ax.set_title(col, fontsize=12, fontweight='bold')
+    ax.set_xlabel('MW', fontsize=10)
+    ax.set_ylabel('Tần suất', fontsize=10)
+    ax.legend(fontsize=8)
+    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{x:,.0f}'))
+
+for j in range(len(region_cols), len(axes)):
+    axes[j].set_visible(False)
+
+fig.suptitle('Phân Phối Tần Suất Tải Điện - Từng Vùng', fontsize=16, fontweight='bold', y=1.01)
+plt.tight_layout()
+plt.savefig(f'{OUTPUT_DIR}/09_histogram_phan_phoi.png')
+plt.close()
+print(f"  → Đã lưu: {OUTPUT_DIR}/09_histogram_phan_phoi.png")
+
+# ====================== BIỂU ĐỒ 10: CHUỖI THỜI GIAN 1 NĂM MẪU ======================
+print("Vẽ biểu đồ 10: Chuỗi thời gian 1 năm mẫu (2017)...")
+fig, ax = plt.subplots(figsize=(16, 5))
+
+sample = df['2017']['total_MW'].resample('D').mean()
+ax.plot(sample.index, sample.values, color='steelblue', linewidth=1.2)
+ax.fill_between(sample.index, sample.values, sample.values.min(), alpha=0.15, color='steelblue')
+
+ax.set_title('Tổng Tải Điện PJM - Trung Bình Ngày Năm 2017', fontsize=15, fontweight='bold', pad=15)
+ax.set_xlabel('Thời gian', fontsize=12)
+ax.set_ylabel('Tải điện (MW)', fontsize=12)
+ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{x:,.0f}'))
+plt.tight_layout()
+plt.savefig(f'{OUTPUT_DIR}/10_chuoi_thoi_gian_2017.png')
+plt.close()
+print(f"  → Đã lưu: {OUTPUT_DIR}/10_chuoi_thoi_gian_2017.png")
+
+# ====================== TỔNG KẾT ======================
+print()
+print("=" * 55)
+print("  HOÀN THÀNH! Tất cả biểu đồ đã lưu vào:")
+print(f"  📁 {os.path.abspath(OUTPUT_DIR)}")
+print("=" * 55)
+print()
+charts = sorted(os.listdir(OUTPUT_DIR))
+for c in charts:
+    print(f"   ✅ {c}")
