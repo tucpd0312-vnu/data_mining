@@ -1,9 +1,12 @@
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # ✅ Phải gọi TRƯỚC khi import pyplot
 import matplotlib.pyplot as plt
-import seaborn as sns
+import os
 
-df = pd.read_csv('data/processed_energy_data.csv', index_col=0, parse_dates=True)
+os.makedirs('output/charts', exist_ok=True)  # Tạo thư mục lưu ảnh
+df = pd.read_csv('processed_energy_feature_data.csv', index_col=0, parse_dates=True)
 
 print("=" * 80)
 print("THÔNG TIN CƠ BẢN VỀ TẬP DỮ LIỆU ĐÃ TIỀN XỬ LÝ")
@@ -57,3 +60,5 @@ print(f"\n 5 KIỂU DỮ LIỆU:")
 print(df.dtypes.value_counts())
 
 print("\n Tất cả hoàn thành!")
+plt.savefig('output/charts/ten_bieu_do.png', dpi=150, bbox_inches='tight')
+plt.close()
